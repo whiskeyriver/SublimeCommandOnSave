@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 import shlex
 import subprocess
 
@@ -19,40 +20,51 @@ class CommandOnSave(sublime_plugin.EventListener):
         if settings is None:
             return
 
-        file = view.file_name()
+        filename = view.file_name()
         before_stat = None
 
         view.erase_status(_STATUS_KEY)
         for path, commands in settings.items():
-            if file.startswith(path):
+            if filename.startswith(path):
                 for command in commands:
-                    # record the mtime so we can check if we need to reload the file
                     if before_stat is None:
-                        before_stat = os.stat(file)
-
-                    command = re.sub(r"\b_file_\b", file, command)
-                    command_args = shlex.split(command)
-
-                    process = subprocess.Popen(
-                        command_args,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                    )
-                    output = process.stdout.read()
-                    code = process.wait()
-                    if code != 0:
+                        before_stat = os.stat(filename)
+                    try:
+                        output = self._exec(command, filename)
+                    except subprocess.CalledProcessError as e:
+                        print(e)
                         view.set_status(
-                            _STATUS_KEY,
-                            "ERROR: Command failed: %s" % (" ".join(command_args)),
+                            _STATUS_KEY, "ERROR: Command failed: {e.output}".format(e=e)
                         )
                         print(
-                            "CommandOnSave %s failed code %d; output: %s"
-                            % (" ".join(command), code, output)
+                            "CommandOnSave failed code {e.returncode}; output: {e.output}".format(
+                                e=e
+                            ),
+                            file=sys.stderr,
                         )
                         # attempt to execute any other commands
 
         if before_stat is not None and not view.is_dirty():
-            after_stat = os.stat(file)
+            after_stat = os.stat(filename)
             if before_stat.st_mtime != after_stat.st_mtime:
                 # it seems like the file changed: reload the view
                 view.run_command("revert")
+
+    def _exec(self, command: str, filename: str):
+        """Perform the command execution.
+
+        Args:
+            command (str): The command string
+            filename (str): The fully-qualified file name
+
+        Returns:
+            str: The command output
+
+        Raises:
+            subprocess.CalledProcessError
+        """
+        command_sub = re.sub(r"\b_file_\b", filename, command)
+        command_args = shlex.split(command_sub)
+
+        result = subprocess.check_output(command_args)
+        return result
